@@ -2,7 +2,7 @@ import sys
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QCheckBox, 
                              QScrollArea, QProgressBar, QFrame, QLineEdit, QFileDialog,
-                             QComboBox) # <-- Added QComboBox
+                             QComboBox, QSlider) # <-- Added QSlider
 from PyQt6.QtGui import QPixmap, QImage, QDragEnterEvent, QDropEvent
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import numpy as np
@@ -207,6 +207,35 @@ class MainWindow(QMainWindow):
         ])
         self.combo_sort.currentIndexChanged.connect(self.sort_widgets)
         self.combo_sort.setEnabled(False) # Disabled until matching is done
+
+        # --- NEW: Settings / Sliders Panel ---
+        settings_layout = QHBoxLayout()
+        
+        # Hash Size Slider
+        self.lbl_hash = QLabel("<b>Hash Size:</b> 8")
+        self.slider_hash = QSlider(Qt.Orientation.Horizontal)
+        self.slider_hash.setRange(4, 24) # Allow sizes from 4 to 24
+        self.slider_hash.setSingleStep(2)
+        self.slider_hash.setValue(8) # Default 8
+        self.slider_hash.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.slider_hash.setTickInterval(4)
+        self.slider_hash.valueChanged.connect(self.on_hash_changed)
+        
+        # Threshold Slider
+        self.lbl_thresh = QLabel("<b>Match Threshold:</b> 10")
+        self.slider_thresh = QSlider(Qt.Orientation.Horizontal)
+        self.slider_thresh.setRange(0, 60) # Allow distances up to 60
+        self.slider_thresh.setValue(10) # Default 10
+        self.slider_thresh.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.slider_thresh.setTickInterval(5)
+        self.slider_thresh.valueChanged.connect(lambda v: self.lbl_thresh.setText(f"<b>Match Threshold:</b> {v}"))
+
+        settings_layout.addWidget(self.lbl_hash)
+        settings_layout.addWidget(self.slider_hash)
+        settings_layout.addWidget(QLabel("   |   ")) # Spacer
+        settings_layout.addWidget(self.lbl_thresh)
+        settings_layout.addWidget(self.slider_thresh)
+        self.main_layout.addLayout(settings_layout)
         
         action_layout.addWidget(self.chk_force_rebuild)
         action_layout.addWidget(self.btn_process)
@@ -238,8 +267,10 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(f"Scanning {folder_type} folder...")
         self.progress_bar.setValue(0)
         force = self.chk_force_rebuild.isChecked()
+        h_size = self.slider_hash.value() # <-- Grab the slider value
         
-        self.worker = WorkerThread(self.core.scan_folder, path, folder_type, force)
+        # Pass h_size to the worker
+        self.worker = WorkerThread(self.core.scan_folder, path, folder_type, force, h_size)
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.finished.connect(lambda: self.lbl_status.setText(f"Finished caching {folder_type}."))
         self.worker.start()
@@ -256,8 +287,10 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("Matching images...")
         self.progress_bar.setValue(0)
         
-        # We pass 10 as the threshold argument to find_matches
-        self.match_worker = WorkerThread(self.core.find_matches, 10)
+        thresh = self.slider_thresh.value() # <-- Grab the slider value
+        
+        # Pass thresh to the worker instead of the hardcoded 10
+        self.match_worker = WorkerThread(self.core.find_matches, thresh)
         self.match_worker.progress.connect(self.progress_bar.setValue)
         self.match_worker.finished.connect(self.on_matching_finished)
         self.match_worker.start()
@@ -316,6 +349,11 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText("Batch replacement complete.")
         self.btn_process.setEnabled(True)
         self.btn_batch.setEnabled(True)
+
+    def on_hash_changed(self, value):
+        self.lbl_hash.setText(f"<b>Hash Size:</b> {value}")
+        self.chk_force_rebuild.setChecked(True)
+        self.lbl_status.setText("Hash size changed. 'Force Recache' automatically selected.")
 
     def toggle_selection(self):
         self.toggle_state = not self.toggle_state

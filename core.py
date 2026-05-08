@@ -48,7 +48,8 @@ class ImageProcessor:
         ''')
         self.conn.commit()
 
-    def scan_folder(self, folder_path, folder_type, force_rebuild=False, progress_callback=None):
+    # UPDATE 1: Add hash_size=8 to the parameters
+    def scan_folder(self, folder_path, folder_type, force_rebuild=False, hash_size=8, progress_callback=None):
         folder = Path(folder_path)
         valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
         files = [f for f in folder.iterdir() if f.suffix.lower() in valid_exts]
@@ -56,7 +57,6 @@ class ImageProcessor:
         total = len(files)
         cursor = self.conn.cursor()
 
-        # Fetch existing cache to optimize scanning
         if force_rebuild:
             cursor.execute("DELETE FROM images WHERE folder_type=?", (folder_type,))
             existing_cache = {}
@@ -68,7 +68,6 @@ class ImageProcessor:
             str_path = str(filepath)
             stat = filepath.stat()
             
-            # Optimization Check: Skip if file is unchanged
             if str_path in existing_cache:
                 cached = existing_cache[str_path]
                 if cached['size'] == stat.st_size and cached['mtime'] == stat.st_mtime:
@@ -79,9 +78,9 @@ class ImageProcessor:
             try:
                 with Image.open(filepath) as img:
                     width, height = img.size
-                    h = str(imagehash.phash(img, hash_size=8))
+                    # UPDATE 2: Pass the dynamic hash_size variable here
+                    h = str(imagehash.phash(img, hash_size=hash_size)) 
                 
-                # Insert or Replace updates the row if filepath already exists
                 cursor.execute('''
                     INSERT OR REPLACE INTO images 
                     (folder_type, filepath, filename, size_bytes, mtime, width, height, phash)
