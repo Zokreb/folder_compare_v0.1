@@ -94,13 +94,22 @@ class PairWidget(QWidget):
         mid_layout.addWidget(QLabel(f"<b>Cropped:</b> {self.c_name}"))
         mid_layout.addWidget(QLabel(f"Size: {self.c_size / 1024:.1f} KB | {self.c_w}x{self.c_h}"))
         
-        # --- NEW: Calculate and Display % Crop Area ---
+        """# --- NEW: Calculate and Display % Crop Area ---
         if self.o_w * self.o_h > 0:
             self.crop_pct = (self.c_w * self.c_h) / (self.o_w * self.o_h) * 100
         else:
             self.crop_pct = 100.0
             
-        mid_layout.addWidget(QLabel(f"<b>Crop Area:</b> {self.crop_pct:.1f}% of original"))
+        mid_layout.addWidget(QLabel(f"<b>Crop Area:</b> {self.crop_pct:.1f}% of original"))"""
+
+        # --- NEW: Calculate and Display % Area Lost ---
+        if self.o_w * self.o_h > 0:
+            # 1.0 minus the ratio gives us the percentage of pixels missing
+            self.crop_loss_pct = (1.0 - ((self.c_w * self.c_h) / (self.o_w * self.o_h))) * 100
+        else:
+            self.crop_loss_pct = 0.0
+            
+        mid_layout.addWidget(QLabel(f"<b>Area Lost:</b> {self.crop_loss_pct:.1f}%"))
         
         # EXACT Math Warning Check (Geometry only, ignoring file weight)
         if self.c_w > self.o_w or self.c_h > self.o_h or (self.c_w * self.c_h) > (self.o_w * self.o_h):
@@ -191,8 +200,8 @@ class MainWindow(QMainWindow):
         self.combo_sort = QComboBox()
         self.combo_sort.addItems([
             "Sort: Default (Match Quality)",
-            "Sort: % Crop Area (Smallest First)",
-            "Sort: % Crop Area (Largest First)",
+            "Sort: % Area Lost (Smallest First)",
+            "Sort: % Area Lost (Largest First)",
             "Sort: Cropped Width (Largest First)",
             "Sort: Cropped Height (Largest First)"
         ])
@@ -334,10 +343,10 @@ class MainWindow(QMainWindow):
         sort_type = self.combo_sort.currentText()
         
         # Sort the python list based on widget attributes
-        if sort_type == "Sort: % Crop Area (Smallest First)":
-            self.pair_widgets.sort(key=lambda pw: pw.crop_pct)
-        elif sort_type == "Sort: % Crop Area (Largest First)":
-            self.pair_widgets.sort(key=lambda pw: pw.crop_pct, reverse=True)
+        if sort_type == "Sort: % Area Lost (Smallest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.crop_loss_pct)
+        elif sort_type == "Sort: % Area Lost (Largest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.crop_loss_pct, reverse=True)
         elif sort_type == "Sort: Cropped Width (Largest First)":
             self.pair_widgets.sort(key=lambda pw: pw.c_w, reverse=True)
         elif sort_type == "Sort: Cropped Height (Largest First)":
@@ -347,7 +356,6 @@ class MainWindow(QMainWindow):
             self.pair_widgets.sort(key=lambda pw: pw.default_index)
 
         # Re-insert widgets into the layout in the new order.
-        # PyQt automatically moves them from their old position.
         for i, pw in enumerate(self.pair_widgets):
             self.scroll_layout.insertWidget(i, pw)
 
