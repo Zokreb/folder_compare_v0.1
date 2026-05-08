@@ -1,7 +1,8 @@
 import sys
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QCheckBox, 
-                             QScrollArea, QProgressBar, QFrame, QLineEdit, QFileDialog)
+                             QScrollArea, QProgressBar, QFrame, QLineEdit, QFileDialog,
+                             QComboBox) # <-- Added QComboBox
 from PyQt6.QtGui import QPixmap, QImage, QDragEnterEvent, QDropEvent
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import numpy as np
@@ -93,18 +94,20 @@ class PairWidget(QWidget):
         mid_layout.addWidget(QLabel(f"<b>Cropped:</b> {self.c_name}"))
         mid_layout.addWidget(QLabel(f"Size: {self.c_size / 1024:.1f} KB | {self.c_w}x{self.c_h}"))
         
-        # --- NEW: Enhancement Warning Cue ---
-        #if self.c_w > self.o_w or self.c_h > self.o_h or self.c_size > self.o_size:
-        if self.c_w > self.o_w or self.c_h > self.o_h or (self.c_w * self.c_h) > (self.o_w * self.o_h): # This checks if the cropped image has more pixels than the original, which is a strong indicator of upscaling.
-            lbl_warn = QLabel("<b>⚠️ WARNING: Cropped image is larger/upscaled!</b>")
+        # --- NEW: Calculate and Display % Crop Area ---
+        if self.o_w * self.o_h > 0:
+            self.crop_pct = (self.c_w * self.c_h) / (self.o_w * self.o_h) * 100
+        else:
+            self.crop_pct = 100.0
+            
+        mid_layout.addWidget(QLabel(f"<b>Crop Area:</b> {self.crop_pct:.1f}% of original"))
+        
+        # EXACT Math Warning Check (Geometry only, ignoring file weight)
+        if self.c_w > self.o_w or self.c_h > self.o_h or (self.c_w * self.c_h) > (self.o_w * self.o_h):
+            lbl_warn = QLabel("<b>⚠️ WARNING: Cropped image has larger dimensions!</b>")
             lbl_warn.setStyleSheet("color: #D84315; background-color: #FBE9E7; padding: 4px; border-radius: 4px; border: 1px solid #D84315;")
             lbl_warn.setWordWrap(True)
             mid_layout.addWidget(lbl_warn)
-            
-            # Optional: You can uncomment the line below if you want the app to 
-            # automatically uncheck the mass-replace box for enhanced images to be extra safe.
-            # self.chk_mass.setEnabled(False) 
-        # ------------------------------------
 
         self.btn_replace = QPushButton("Replace Single")
         self.btn_replace.clicked.connect(self.replace_single)
@@ -183,9 +186,22 @@ class MainWindow(QMainWindow):
         
         self.btn_batch = QPushButton("Mass Replace Selected")
         self.btn_batch.clicked.connect(self.batch_replace)
+
+        #Sort controls
+        self.combo_sort = QComboBox()
+        self.combo_sort.addItems([
+            "Sort: Default (Match Quality)",
+            "Sort: % Crop Area (Smallest First)",
+            "Sort: % Crop Area (Largest First)",
+            "Sort: Cropped Width (Largest First)",
+            "Sort: Cropped Height (Largest First)"
+        ])
+        self.combo_sort.currentIndexChanged.connect(self.sort_widgets)
+        self.combo_sort.setEnabled(False) # Disabled until matching is done
         
         action_layout.addWidget(self.chk_force_rebuild)
         action_layout.addWidget(self.btn_process)
+        action_layout.addWidget(self.combo_sort) # Added to layout
         action_layout.addWidget(self.btn_toggle_sel)
         action_layout.addWidget(self.btn_batch)
         self.main_layout.addLayout(action_layout)
@@ -248,28 +264,26 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(f"Generating {total} previews and overlays...")
         self.progress_bar.setValue(0)
         
-        # Disable buttons to prevent the user from clicking while it loads
         self.btn_process.setEnabled(False)
         self.btn_batch.setEnabled(False)
         self.chk_force_rebuild.setEnabled(False)
+        self.combo_sort.setEnabled(False)
         
         for i, match in enumerate(matches):
             pw = PairWidget(match, self.core)
+            pw.default_index = i  # <-- Store original order
             self.scroll_layout.addWidget(pw)
             self.pair_widgets.append(pw)
             
-            # Update the progress bar
             self.progress_bar.setValue(int((i + 1) / total * 100))
-            
-            # Force the GUI to process events (redraw the UI, update the bar, avoid freezing)
             QApplication.processEvents()
             
         self.lbl_status.setText(f"Found {total} matches. Ready.")
         
-        # Re-enable the buttons
         self.btn_process.setEnabled(True)
         self.btn_batch.setEnabled(True)
         self.chk_force_rebuild.setEnabled(True)
+        self.combo_sort.setEnabled(True) # <-- Enable sorting
 
     def batch_replace(self):
         selected = [pw for pw in self.pair_widgets if pw.chk_mass.isChecked() and pw.btn_replace.isEnabled()]
@@ -312,6 +326,30 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(int((i + 1) / total * 100))
             
         self.lbl_status.setText("Batch replacement complete.")
+
+    def sort_widgets(self):
+        if not self.pair_widgets:
+            return
+
+        sort_type = self.combo_sort.currentText()
+        
+        # Sort the python list based on widget attributes
+        if sort_type == "Sort: % Crop Area (Smallest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.crop_pct)
+        elif sort_type == "Sort: % Crop Area (Largest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.crop_pct, reverse=True)
+        elif sort_type == "Sort: Cropped Width (Largest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.c_w, reverse=True)
+        elif sort_type == "Sort: Cropped Height (Largest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.c_h, reverse=True)
+        else:
+            # Default fallback using the index we saved during generation
+            self.pair_widgets.sort(key=lambda pw: pw.default_index)
+
+        # Re-insert widgets into the layout in the new order.
+        # PyQt automatically moves them from their old position.
+        for i, pw in enumerate(self.pair_widgets):
+            self.scroll_layout.insertWidget(i, pw)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
