@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QCheckBox, 
-                             QScrollArea, QProgressBar, QFileDialog)
+                             QScrollArea, QProgressBar, QFrame, QLineEdit, QFileDialog)
 from PyQt6.QtGui import QPixmap, QImage, QDragEnterEvent, QDropEvent
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import numpy as np
@@ -19,8 +19,55 @@ class WorkerThread(QThread):
         self.args = args
 
     def run(self):
-        self.task_func(*self.args, self.progress.emit)
+        self.task_func(*self.args, progress_callback=self.progress.emit)
         self.finished.emit()
+
+class FolderInputZone(QWidget):
+    folder_dropped = pyqtSignal(str)
+
+    def __init__(self, title):
+        super().__init__()
+        self.setAcceptDrops(True)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        lbl_title = QLabel(f"<b>{title}</b>")
+        layout.addWidget(lbl_title)
+        
+        input_layout = QHBoxLayout()
+        self.line_edit = QLineEdit()
+        self.line_edit.setPlaceholderText("Drag and drop folder here or browse...")
+        self.line_edit.setReadOnly(True)  # Keeps the user from typing invalid paths manually
+        
+        self.btn_browse = QPushButton("Browse...")
+        self.btn_browse.clicked.connect(self.browse_folder)
+        
+        input_layout.addWidget(self.line_edit)
+        input_layout.addWidget(self.btn_browse)
+        
+        layout.addLayout(input_layout)
+
+    def browse_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Directory")
+        if folder:
+            self.set_folder(folder)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.accept()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            self.set_folder(path)
+            
+    def set_folder(self, path):
+        self.line_edit.setText(path)
+        self.folder_dropped.emit(path)
 
 class PairWidget(QWidget):
     def __init__(self, data, core, parent=None):
@@ -32,13 +79,11 @@ class PairWidget(QWidget):
 
         layout = QHBoxLayout(self)
         
-        # Left: Original
         self.lbl_orig = QLabel()
         self.lbl_orig.setFixedSize(300, 300)
         self.lbl_orig.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.load_image(self.o_path, self.lbl_orig)
         
-        # Middle: Info & Actions
         mid_layout = QVBoxLayout()
         mid_layout.addWidget(QLabel(f"<b>Original:</b> {self.o_name}"))
         mid_layout.addWidget(QLabel(f"Size: {self.o_size / 1024:.1f} KB | {self.o_w}x{self.o_h}"))
@@ -48,7 +93,7 @@ class PairWidget(QWidget):
         
         self.btn_replace = QPushButton("Replace Single")
         self.btn_replace.clicked.connect(self.replace_single)
-        self.chk_mass = QCheckBox("Select for Mass Replace")
+        self.chk_mass = QCheckBox("Select")
         
         mid_layout.addWidget(self.btn_replace)
         mid_layout.addWidget(self.chk_mass)
@@ -56,7 +101,6 @@ class PairWidget(QWidget):
         mid_widget.setLayout(mid_layout)
         mid_widget.setFixedWidth(250)
         
-        # Right: Cropped (with overlay applied to original preview)
         self.lbl_crop = QLabel()
         self.lbl_crop.setFixedSize(300, 300)
         self.lbl_crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -71,7 +115,6 @@ class PairWidget(QWidget):
         label.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def load_overlay(self):
-        # Generates the ORB overlay box
         img_rgb = self.core.generate_overlay(self.o_path, self.c_path)
         if img_rgb is not None:
             h, w, ch = img_rgb.shape
@@ -86,37 +129,61 @@ class PairWidget(QWidget):
         self.core.replace_image(self.o_path, self.c_path)
         self.btn_replace.setText("Replaced!")
         self.btn_replace.setEnabled(False)
+        self.chk_mass.setChecked(False)
+        self.chk_mass.setEnabled(False)
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Image Match & Restore")
-        self.setGeometry(100, 100, 1000, 800)
+        self.setGeometry(100, 100, 1100, 800)
         self.core = ImageProcessor()
         
-        self.setAcceptDrops(True)
-
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         self.main_layout = QVBoxLayout(main_widget)
 
-        # Top controls
-        top_layout = QHBoxLayout()
-        self.lbl_status = QLabel("Drag & Drop Original and Cropped folders anywhere.")
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
+    # Top Controls: Folder Inputs
+        drop_layout = QHBoxLayout()
+        self.drop_orig = FolderInputZone("Original Images")
+        self.drop_orig.folder_dropped.connect(lambda path: self.run_scan(path, "original"))
+        
+        self.drop_crop = FolderInputZone("Cropped Images")
+        self.drop_crop.folder_dropped.connect(lambda path: self.run_scan(path, "cropped"))
+        
+        drop_layout.addWidget(self.drop_orig)
+        drop_layout.addWidget(self.drop_crop)
+        self.main_layout.addLayout(drop_layout)
+
+        # Top Controls: Actions
+        action_layout = QHBoxLayout()
+        self.chk_force_rebuild = QCheckBox("Force Recache (Ignore DB)")
         self.btn_process = QPushButton("Find Matches")
         self.btn_process.clicked.connect(self.start_matching)
+        
+        self.btn_toggle_sel = QPushButton("Toggle Select All")
+        self.btn_toggle_sel.clicked.connect(self.toggle_selection)
+        self.toggle_state = False
+        
         self.btn_batch = QPushButton("Mass Replace Selected")
         self.btn_batch.clicked.connect(self.batch_replace)
         
-        top_layout.addWidget(self.lbl_status)
-        top_layout.addWidget(self.progress_bar)
-        top_layout.addWidget(self.btn_process)
-        top_layout.addWidget(self.btn_batch)
-        self.main_layout.addLayout(top_layout)
+        action_layout.addWidget(self.chk_force_rebuild)
+        action_layout.addWidget(self.btn_process)
+        action_layout.addWidget(self.btn_toggle_sel)
+        action_layout.addWidget(self.btn_batch)
+        self.main_layout.addLayout(action_layout)
 
-        # Scroll Area for matched pairs
+        # Status and Progress
+        status_layout = QHBoxLayout()
+        self.lbl_status = QLabel("Ready.")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        status_layout.addWidget(self.lbl_status)
+        status_layout.addWidget(self.progress_bar)
+        self.main_layout.addLayout(status_layout)
+
+        # Scroll Area
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_content = QWidget()
@@ -124,38 +191,27 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidget(self.scroll_content)
         self.main_layout.addWidget(self.scroll_area)
 
-        self.orig_folder = None
-        self.crop_folder = None
         self.pair_widgets = []
 
-    def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
-
-    def dropEvent(self, event: QDropEvent):
-        urls = event.mimeData().urls()
-        for url in urls:
-            path = url.toLocalFile()
-            folder_type = "original" if not self.orig_folder else "cropped"
-            
-            if not self.orig_folder:
-                self.orig_folder = path
-                self.lbl_status.setText(f"Original set. Drop Cropped folder now.")
-                self.run_scan(path, "original")
-            elif not self.crop_folder:
-                self.crop_folder = path
-                self.lbl_status.setText(f"Scanning Cropped...")
-                self.run_scan(path, "cropped")
-
     def run_scan(self, path, folder_type):
-        self.worker = WorkerThread(self.core.scan_folder, path, folder_type)
+        self.lbl_status.setText(f"Scanning {folder_type} folder...")
+        self.progress_bar.setValue(0)
+        force = self.chk_force_rebuild.isChecked()
+        
+        self.worker = WorkerThread(self.core.scan_folder, path, folder_type, force)
         self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.finished.connect(lambda: self.lbl_status.setText(f"Finished scanning {folder_type}."))
+        self.worker.finished.connect(lambda: self.lbl_status.setText(f"Finished caching {folder_type}."))
         self.worker.start()
 
+    def clear_layout(self):
+        for i in reversed(range(self.scroll_layout.count())): 
+            widgetToRemove = self.scroll_layout.itemAt(i).widget()
+            self.scroll_layout.removeWidget(widgetToRemove)
+            widgetToRemove.setParent(None)
+        self.pair_widgets.clear()
+
     def start_matching(self):
+        self.clear_layout()
         self.lbl_status.setText("Matching images...")
         self.core.find_matches()
         matches = self.core.get_match_pairs()
@@ -167,10 +223,19 @@ class MainWindow(QMainWindow):
             
         self.lbl_status.setText(f"Found {len(matches)} matches.")
 
+    def toggle_selection(self):
+        self.toggle_state = not self.toggle_state
+        for pw in self.pair_widgets:
+            if pw.btn_replace.isEnabled():
+                pw.chk_mass.setChecked(self.toggle_state)
+
     def batch_replace(self):
         selected = [pw for pw in self.pair_widgets if pw.chk_mass.isChecked() and pw.btn_replace.isEnabled()]
         total = len(selected)
-        
+        if total == 0:
+            return
+            
+        self.lbl_status.setText("Running mass replacement...")
         for i, pw in enumerate(selected):
             pw.replace_single()
             self.progress_bar.setValue(int((i + 1) / total * 100))

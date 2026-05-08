@@ -15,14 +15,24 @@ class ImageProcessor:
 
     def init_db(self):
         cursor = self.conn.cursor()
-        # Table for storing scanned image metadata
+        
+        # Check if we are dealing with an old schema
+        cursor.execute("PRAGMA table_info(images)")
+        cols = [col[1] for col in cursor.fetchall()]
+        if cols and 'mtime' not in cols:
+            print("Old database schema detected. Dropping old tables...")
+            cursor.execute("DROP TABLE IF EXISTS images")
+            cursor.execute("DROP TABLE IF EXISTS matches")
+
+        # Table for storing scanned image metadata (Now with UNIQUE filepath and mtime)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS images (
                 id INTEGER PRIMARY KEY,
                 folder_type TEXT,
-                filepath TEXT,
+                filepath TEXT UNIQUE,
                 filename TEXT,
                 size_bytes INTEGER,
+                mtime REAL,
                 width INTEGER,
                 height INTEGER,
                 phash TEXT
@@ -38,26 +48,45 @@ class ImageProcessor:
         ''')
         self.conn.commit()
 
-    def scan_folder(self, folder_path, folder_type, progress_callback=None):
+    def scan_folder(self, folder_path, folder_type, force_rebuild=False, progress_callback=None):
         folder = Path(folder_path)
         valid_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
         files = [f for f in folder.iterdir() if f.suffix.lower() in valid_exts]
         
         total = len(files)
         cursor = self.conn.cursor()
+
+        # Fetch existing cache to optimize scanning
+        if force_rebuild:
+            cursor.execute("DELETE FROM images WHERE folder_type=?", (folder_type,))
+            existing_cache = {}
+        else:
+            cursor.execute("SELECT filepath, size_bytes, mtime FROM images WHERE folder_type=?", (folder_type,))
+            existing_cache = {row[0]: {'size': row[1], 'mtime': row[2]} for row in cursor.fetchall()}
         
         for i, filepath in enumerate(files):
+            str_path = str(filepath)
+            stat = filepath.stat()
+            
+            # Optimization Check: Skip if file is unchanged
+            if str_path in existing_cache:
+                cached = existing_cache[str_path]
+                if cached['size'] == stat.st_size and cached['mtime'] == stat.st_mtime:
+                    if progress_callback:
+                        progress_callback(int((i + 1) / total * 100))
+                    continue
+
             try:
                 with Image.open(filepath) as img:
                     width, height = img.size
                     h = str(imagehash.phash(img, hash_size=8))
                 
-                size_bytes = filepath.stat().st_size
-                
+                # Insert or Replace updates the row if filepath already exists
                 cursor.execute('''
-                    INSERT INTO images (folder_type, filepath, filename, size_bytes, width, height, phash)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (folder_type, str(filepath), filepath.name, size_bytes, width, height, h))
+                    INSERT OR REPLACE INTO images 
+                    (folder_type, filepath, filename, size_bytes, mtime, width, height, phash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (folder_type, str_path, filepath.name, stat.st_size, stat.st_mtime, width, height, h))
                 
             except Exception as e:
                 print(f"Error reading {filepath}: {e}")
@@ -67,7 +96,13 @@ class ImageProcessor:
                 
         self.conn.commit()
 
+    def clear_matches(self):
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM matches")
+        self.conn.commit()
+
     def find_matches(self, threshold=10):
+        self.clear_matches()
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, phash FROM images WHERE folder_type='original'")
         originals = cursor.fetchall()
@@ -111,22 +146,18 @@ class ImageProcessor:
         trash_dir = crop_p.parent / "_Trash"
         trash_dir.mkdir(exist_ok=True)
         
-        # Move cropped to trash
         shutil.move(str(crop_p), str(trash_dir / crop_p.name))
         
-        # Copy original to cropped folder, using original's extension
         new_name = crop_p.stem + orig_p.suffix
         shutil.copy2(str(orig_p), str(crop_p.parent / new_name))
 
     def generate_overlay(self, orig_path, crop_path):
-        """Uses ORB to find the cropped area and draw a box on the original image"""
         img_orig = cv2.imread(orig_path)
         img_crop = cv2.imread(crop_path)
         
         if img_orig is None or img_crop is None:
             return None
 
-        # Convert to grayscale
         gray_orig = cv2.cvtColor(img_orig, cv2.COLOR_BGR2GRAY)
         gray_crop = cv2.cvtColor(img_crop, cv2.COLOR_BGR2GRAY)
 
@@ -134,12 +165,14 @@ class ImageProcessor:
         kp1, des1 = orb.detectAndCompute(gray_crop, None)
         kp2, des2 = orb.detectAndCompute(gray_orig, None)
 
+        if des1 is None or des2 is None:
+            return cv2.cvtColor(img_orig, cv2.COLOR_BGR2RGB)
+
         bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
         try:
             matches = bf.match(des1, des2)
             matches = sorted(matches, key=lambda x: x.distance)
             
-            # Extract locations of good matches
             src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
             dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
 
@@ -149,7 +182,6 @@ class ImageProcessor:
             
             if M is not None:
                 dst = cv2.perspectiveTransform(pts, M)
-                # Draw green bounding box on the original image
                 img_with_box = cv2.polylines(img_orig, [np.int32(dst)], True, (0, 255, 0), 3, cv2.LINE_AA)
                 return cv2.cvtColor(img_with_box, cv2.COLOR_BGR2RGB)
         except Exception:
