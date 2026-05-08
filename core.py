@@ -121,11 +121,19 @@ class ImageProcessor:
             best_match = None
             min_dist = threshold
 
-            for o_id, o_hash_str in originals:
+            """for o_id, o_hash_str in originals:
                 o_hash = imagehash.hex_to_hash(o_hash_str)
                 dist = c_hash - o_hash
                 if dist < min_dist:
                     min_dist = dist
+                    best_match = o_id"""
+            
+            for o_id, o_hash_str in originals:
+                o_hash = imagehash.hex_to_hash(o_hash_str)
+                dist = c_hash - o_hash
+                if dist < min_dist:
+                    # FIX: Cast numpy.int64 to standard Python int
+                    min_dist = int(dist) 
                     best_match = o_id
 
             if best_match is not None:
@@ -143,7 +151,8 @@ class ImageProcessor:
         cursor.execute('''
             SELECT 
                 o.filepath, o.filename, o.size_bytes, o.width, o.height,
-                c.filepath, c.filename, c.size_bytes, c.width, c.height
+                c.filepath, c.filename, c.size_bytes, c.width, c.height,
+                m.distance
             FROM matches m
             JOIN images o ON m.orig_id = o.id
             JOIN images c ON m.crop_id = c.id

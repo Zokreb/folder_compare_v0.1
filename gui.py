@@ -75,74 +75,152 @@ class PairWidget(QWidget):
         super().__init__(parent)
         self.core = core
         self.data = data
+        
+        # Unpack the data (including the new distance metric)
         (self.o_path, self.o_name, self.o_size, self.o_w, self.o_h,
-         self.c_path, self.c_name, self.c_size, self.c_w, self.c_h) = data
+         self.c_path, self.c_name, self.c_size, self.c_w, self.c_h,
+         self.distance) = data
 
         layout = QHBoxLayout(self)
         
-        # Left: Original
+        # --- 1. CREATE ALL WIDGETS FIRST ---
+        
+        # Left: Original + Overlay
         self.lbl_orig = QLabel()
         self.lbl_orig.setFixedSize(300, 300)
         self.lbl_orig.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.load_image(self.o_path, self.lbl_orig)
         
         # Middle: Info & Actions
-        mid_layout = QVBoxLayout()
-        mid_layout.addWidget(QLabel(f"<b>Original:</b> {self.o_name}"))
-        mid_layout.addWidget(QLabel(f"Size: {self.o_size / 1024:.1f} KB | {self.o_w}x{self.o_h}"))
-        mid_layout.addWidget(QLabel("---"))
-        mid_layout.addWidget(QLabel(f"<b>Cropped:</b> {self.c_name}"))
-        mid_layout.addWidget(QLabel(f"Size: {self.c_size / 1024:.1f} KB | {self.c_w}x{self.c_h}"))
+        self.mid_widget = QWidget()
+        self.mid_widget.setFixedWidth(250)
+        self.mid_layout = QVBoxLayout(self.mid_widget)
         
-        """# --- NEW: Calculate and Display % Crop Area ---
-        if self.o_w * self.o_h > 0:
-            self.crop_pct = (self.c_w * self.c_h) / (self.o_w * self.o_h) * 100
-        else:
-            self.crop_pct = 100.0
-            
-        mid_layout.addWidget(QLabel(f"<b>Crop Area:</b> {self.crop_pct:.1f}% of original"))"""
+        # Right: Raw Cropped Image
+        self.lbl_crop = QLabel()
+        self.lbl_crop.setFixedSize(300, 300)
+        self.lbl_crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # --- NEW: Calculate and Display % Area Lost ---
+        # --- 2. POPULATE THE DATA ---
+
+        if isinstance(self.distance, bytes):
+            # Decode the raw little-endian memory dump into an integer
+            self.distance = int.from_bytes(self.distance, byteorder='little')
+        else:
+            self.distance = float(self.distance)
+        
+        # Calculate Confidence Math (assuming default hash_size=8, so 32 is 0%)
+        self.confidence = max(0.0, (1.0 - (self.distance / 32.0)) * 100.0)
+        
+        lbl_conf = QLabel(f"<b>Match Confidence: {self.confidence:.1f}%</b>")
+        if self.confidence > 80:
+            lbl_conf.setStyleSheet("color: #2E7D32; font-size: 14px;") # Green
+        elif self.confidence > 50:
+            lbl_conf.setStyleSheet("color: #F57F17; font-size: 14px;") # Orange
+        else:
+            lbl_conf.setStyleSheet("color: #C62828; font-size: 14px;") # Red
+            
+        self.mid_layout.addWidget(lbl_conf)
+        self.mid_layout.addWidget(QLabel("---"))
+        
+        self.mid_layout.addWidget(QLabel(f"<b>Original:</b> {self.o_name}"))
+        self.mid_layout.addWidget(QLabel(f"Size: {self.o_size / 1024:.1f} KB | {self.o_w}x{self.o_h}"))
+        self.mid_layout.addWidget(QLabel("---"))
+        self.mid_layout.addWidget(QLabel(f"<b>Cropped:</b> {self.c_name}"))
+        self.mid_layout.addWidget(QLabel(f"Size: {self.c_size / 1024:.1f} KB | {self.c_w}x{self.c_h}"))
+        
+        # Calculate and Display % Area Lost
         if self.o_w * self.o_h > 0:
-            # 1.0 minus the ratio gives us the percentage of pixels missing
             self.crop_loss_pct = (1.0 - ((self.c_w * self.c_h) / (self.o_w * self.o_h))) * 100
         else:
             self.crop_loss_pct = 0.0
             
-        mid_layout.addWidget(QLabel(f"<b>Area Lost:</b> {self.crop_loss_pct:.1f}%"))
+        self.mid_layout.addWidget(QLabel(f"<b>Area Lost:</b> {self.crop_loss_pct:.1f}%"))
         
-        # EXACT Math Warning Check (Geometry only, ignoring file weight)
+        # EXACT Math Warning Check
         if self.c_w > self.o_w or self.c_h > self.o_h or (self.c_w * self.c_h) > (self.o_w * self.o_h):
             lbl_warn = QLabel("<b>⚠️ WARNING: Cropped image has larger dimensions!</b>")
             lbl_warn.setStyleSheet("color: #D84315; background-color: #FBE9E7; padding: 4px; border-radius: 4px; border: 1px solid #D84315;")
             lbl_warn.setWordWrap(True)
-            mid_layout.addWidget(lbl_warn)
+            self.mid_layout.addWidget(lbl_warn)
 
         self.btn_replace = QPushButton("Replace Single")
         self.btn_replace.clicked.connect(self.replace_single)
         self.chk_mass = QCheckBox("Select")
         
-        mid_layout.addWidget(self.btn_replace)
-        mid_layout.addWidget(self.chk_mass)
-        mid_widget = QWidget()
-        mid_widget.setLayout(mid_layout)
-        mid_widget.setFixedWidth(250)
-        
-        # Right: Cropped (with overlay)
-        self.lbl_crop = QLabel()
-        self.lbl_crop.setFixedSize(300, 300)
-        self.lbl_crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.load_overlay()
+        self.mid_layout.addWidget(self.btn_replace)
+        self.mid_layout.addWidget(self.chk_mass)
 
+        # --- 3. BUILD LAYOUT AND LOAD IMAGES ---
+        
         layout.addWidget(self.lbl_orig)
-        layout.addWidget(mid_widget)
+        layout.addWidget(self.mid_widget)
         layout.addWidget(self.lbl_crop)
+        
+        # Safely load the images now that ALL labels exist in memory
+        self.load_overlay()
+        self.load_image(self.c_path, self.lbl_crop)
 
     def load_image(self, path, label):
         pixmap = QPixmap(path)
         label.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def load_overlay(self):
+        img_rgb = self.core.generate_overlay(self.o_path, self.c_path)
+        
+        if img_rgb is not None:
+            # We must convert back to BGR just for the imencode step
+            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+            
+            # Encode the image to a memory buffer (simulating a saved .jpg file)
+            is_success, buffer = cv2.imencode(".jpg", img_bgr)
+            
+            if is_success:
+                pixmap = QPixmap()
+                # Load the pixmap directly from the raw bytes
+                pixmap.loadFromData(buffer.tobytes())
+                
+                self.lbl_orig.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                return # Exit the function successfully
+                
+        # Fallback if homography or encoding fails
+        self.load_image(self.o_path, self.lbl_orig)
+
+    def replace_single(self):
+        self.core.replace_image(self.o_path, self.c_path)
+        self.btn_replace.setText("Replaced!")
+        self.btn_replace.setEnabled(False)
+        self.chk_mass.setChecked(False)
+        self.chk_mass.setEnabled(False)
+
+    def load_image(self, path, label):
+        pixmap = QPixmap(path)
+        label.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def load_overlay(self):
+        # Now targets self.lbl_orig instead of self.lbl_crop
+        img_rgb = self.core.generate_overlay(self.o_path, self.c_path)
+        if img_rgb is not None:
+            h, w, ch = img_rgb.shape
+            bytes_per_line = ch * w
+            qimg = QImage(img_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg)
+            self.lbl_orig.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            # Fallback to the raw original if OpenCV fails to find homography
+            self.load_image(self.o_path, self.lbl_orig)
+
+    def replace_single(self):
+        self.core.replace_image(self.o_path, self.c_path)
+        self.btn_replace.setText("Replaced!")
+        self.btn_replace.setEnabled(False)
+        self.chk_mass.setChecked(False)
+        self.chk_mass.setEnabled(False)
+
+    def load_image(self, path, label):
+        pixmap = QPixmap(path)
+        label.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    """def load_overlay(self):
         img_rgb = self.core.generate_overlay(self.o_path, self.c_path)
         if img_rgb is not None:
             h, w, ch = img_rgb.shape
@@ -151,7 +229,7 @@ class PairWidget(QWidget):
             pixmap = QPixmap.fromImage(qimg)
             self.lbl_crop.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         else:
-            self.load_image(self.c_path, self.lbl_crop)
+            self.load_image(self.c_path, self.lbl_crop)"""
 
     def replace_single(self):
         self.core.replace_image(self.o_path, self.c_path)
@@ -166,6 +244,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Match & Restore")
         self.setGeometry(100, 100, 1100, 800)
         self.core = ImageProcessor()
+        self.current_db_hash_size = 8  # <-- NEW: Tracks the active DB hash size        
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -203,7 +282,9 @@ class MainWindow(QMainWindow):
             "Sort: % Area Lost (Smallest First)",
             "Sort: % Area Lost (Largest First)",
             "Sort: Cropped Width (Largest First)",
-            "Sort: Cropped Height (Largest First)"
+            "Sort: Cropped Height (Largest First)",
+            "Sort: Confidence (Highest First)",
+            "Sort: Confidence (Lowest First)"           
         ])
         self.combo_sort.currentIndexChanged.connect(self.sort_widgets)
         self.combo_sort.setEnabled(False) # Disabled until matching is done
@@ -283,17 +364,67 @@ class MainWindow(QMainWindow):
         self.pair_widgets.clear()
 
     def start_matching(self):
+        orig_path = self.drop_orig.line_edit.text()
+        crop_path = self.drop_crop.line_edit.text()
+        
+        if not orig_path or not crop_path:
+            self.lbl_status.setText("Please load both Original and Cropped folders first.")
+            return
+
         self.clear_layout()
+        
+        # Check if the slider changed OR the force rebuild box is ticked
+        if self.slider_hash.value() != getattr(self, 'current_db_hash_size', 8) or self.chk_force_rebuild.isChecked():
+            self.lbl_status.setText("Recaching required. Scanning Original folder...")
+            self.progress_bar.setValue(0)
+            
+            # Lock UI to prevent the user from clicking around during the chain
+            self.btn_process.setEnabled(False)
+            self.btn_batch.setEnabled(False)
+            self.combo_sort.setEnabled(False)
+            
+            h_size = self.slider_hash.value()
+            
+            # Step 1: Start Original Scan
+            self.scan_worker_orig = WorkerThread(self.core.scan_folder, orig_path, "original", True, h_size)
+            self.scan_worker_orig.progress.connect(self.progress_bar.setValue)
+            self.scan_worker_orig.finished.connect(self._chain_scan_cropped) # Move to Step 2 when done
+            self.scan_worker_orig.start()
+        else:
+            # No recache needed, go straight to matching
+            self._chain_matching()
+            
+    def _chain_scan_cropped(self):
+        self.lbl_status.setText("Scanning Cropped folder...")
+        self.progress_bar.setValue(0)
+        
+        crop_path = self.drop_crop.line_edit.text()
+        h_size = self.slider_hash.value()
+        
+        # Step 2: Start Cropped Scan
+        self.scan_worker_crop = WorkerThread(self.core.scan_folder, crop_path, "cropped", True, h_size)
+        self.scan_worker_crop.progress.connect(self.progress_bar.setValue)
+        self.scan_worker_crop.finished.connect(self._chain_matching) # Move to Step 3 when done
+        self.scan_worker_crop.start()
+
+    def _chain_matching(self):
+        # Update our tracking variable and uncheck the rebuild box
+        self.current_db_hash_size = self.slider_hash.value()
+        self.chk_force_rebuild.setChecked(False)
+        
         self.lbl_status.setText("Matching images...")
         self.progress_bar.setValue(0)
         
-        thresh = self.slider_thresh.value() # <-- Grab the slider value
+        # Lock UI in case we skipped straight to this step
+        self.btn_process.setEnabled(False)
         
-        # Pass thresh to the worker instead of the hardcoded 10
+        thresh = self.slider_thresh.value()
+        
+        # Step 3: Find Matches
         self.match_worker = WorkerThread(self.core.find_matches, thresh)
         self.match_worker.progress.connect(self.progress_bar.setValue)
-        self.match_worker.finished.connect(self.on_matching_finished)
-        self.match_worker.start()
+        self.match_worker.finished.connect(self.on_matching_finished) # Render widgets when done
+        self.match_worker.start()            
 
     def on_matching_finished(self):
         matches = self.core.get_match_pairs()
@@ -389,6 +520,10 @@ class MainWindow(QMainWindow):
             self.pair_widgets.sort(key=lambda pw: pw.c_w, reverse=True)
         elif sort_type == "Sort: Cropped Height (Largest First)":
             self.pair_widgets.sort(key=lambda pw: pw.c_h, reverse=True)
+        elif sort_type == "Sort: Confidence (Highest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.confidence, reverse=True)
+        elif sort_type == "Sort: Confidence (Lowest First)":
+            self.pair_widgets.sort(key=lambda pw: pw.confidence)            
         else:
             # Default fallback using the index we saved during generation
             self.pair_widgets.sort(key=lambda pw: pw.default_index)
