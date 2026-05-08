@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         self.main_layout = QVBoxLayout(main_widget)
 
-    # Top Controls: Folder Inputs
+        # Top Controls: Folder Inputs
         drop_layout = QHBoxLayout()
         self.drop_orig = FolderInputZone("Original Images")
         self.drop_orig.folder_dropped.connect(lambda path: self.run_scan(path, "original"))
@@ -213,15 +213,70 @@ class MainWindow(QMainWindow):
     def start_matching(self):
         self.clear_layout()
         self.lbl_status.setText("Matching images...")
-        self.core.find_matches()
-        matches = self.core.get_match_pairs()
+        self.progress_bar.setValue(0)
         
-        for match in matches:
+        # We pass 10 as the threshold argument to find_matches
+        self.match_worker = WorkerThread(self.core.find_matches, 10)
+        self.match_worker.progress.connect(self.progress_bar.setValue)
+        self.match_worker.finished.connect(self.on_matching_finished)
+        self.match_worker.start()
+
+    def on_matching_finished(self):
+        matches = self.core.get_match_pairs()
+        total = len(matches)
+        
+        if total == 0:
+            self.lbl_status.setText("No matches found.")
+            return
+
+        self.lbl_status.setText(f"Generating {total} previews and overlays...")
+        self.progress_bar.setValue(0)
+        
+        # Disable buttons to prevent the user from clicking while it loads
+        self.btn_process.setEnabled(False)
+        self.btn_batch.setEnabled(False)
+        self.chk_force_rebuild.setEnabled(False)
+        
+        for i, match in enumerate(matches):
             pw = PairWidget(match, self.core)
             self.scroll_layout.addWidget(pw)
             self.pair_widgets.append(pw)
             
-        self.lbl_status.setText(f"Found {len(matches)} matches.")
+            # Update the progress bar
+            self.progress_bar.setValue(int((i + 1) / total * 100))
+            
+            # Force the GUI to process events (redraw the UI, update the bar, avoid freezing)
+            QApplication.processEvents()
+            
+        self.lbl_status.setText(f"Found {total} matches. Ready.")
+        
+        # Re-enable the buttons
+        self.btn_process.setEnabled(True)
+        self.btn_batch.setEnabled(True)
+        self.chk_force_rebuild.setEnabled(True)
+
+    def batch_replace(self):
+        selected = [pw for pw in self.pair_widgets if pw.chk_mass.isChecked() and pw.btn_replace.isEnabled()]
+        total = len(selected)
+        if total == 0:
+            return
+            
+        self.lbl_status.setText(f"Running mass replacement for {total} files...")
+        self.progress_bar.setValue(0)
+        
+        self.btn_process.setEnabled(False)
+        self.btn_batch.setEnabled(False)
+
+        for i, pw in enumerate(selected):
+            pw.replace_single()
+            self.progress_bar.setValue(int((i + 1) / total * 100))
+            
+            # Keep the UI responsive during heavy disk I/O
+            QApplication.processEvents()
+            
+        self.lbl_status.setText("Batch replacement complete.")
+        self.btn_process.setEnabled(True)
+        self.btn_batch.setEnabled(True)
 
     def toggle_selection(self):
         self.toggle_state = not self.toggle_state

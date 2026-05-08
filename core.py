@@ -101,16 +101,23 @@ class ImageProcessor:
         cursor.execute("DELETE FROM matches")
         self.conn.commit()
 
-    def find_matches(self, threshold=10):
+    def find_matches(self, threshold=10, progress_callback=None):
         self.clear_matches()
         cursor = self.conn.cursor()
+        
         cursor.execute("SELECT id, phash FROM images WHERE folder_type='original'")
         originals = cursor.fetchall()
         
         cursor.execute("SELECT id, phash FROM images WHERE folder_type='cropped'")
         cropped = cursor.fetchall()
 
-        for c_id, c_hash_str in cropped:
+        total = len(cropped)
+        if total == 0:
+            if progress_callback:
+                progress_callback(100)
+            return
+
+        for i, (c_id, c_hash_str) in enumerate(cropped):
             c_hash = imagehash.hex_to_hash(c_hash_str)
             best_match = None
             min_dist = threshold
@@ -125,6 +132,11 @@ class ImageProcessor:
             if best_match is not None:
                 cursor.execute("INSERT INTO matches (orig_id, crop_id, distance) VALUES (?, ?, ?)", 
                                (best_match, c_id, min_dist))
+            
+            # Emit progress after checking each cropped image against all originals
+            if progress_callback:
+                progress_callback(int((i + 1) / total * 100))
+                
         self.conn.commit()
 
     def get_match_pairs(self):
