@@ -79,11 +79,13 @@ class PairWidget(QWidget):
 
         layout = QHBoxLayout(self)
         
+        # Left: Original
         self.lbl_orig = QLabel()
         self.lbl_orig.setFixedSize(300, 300)
         self.lbl_orig.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.load_image(self.o_path, self.lbl_orig)
         
+        # Middle: Info & Actions
         mid_layout = QVBoxLayout()
         mid_layout.addWidget(QLabel(f"<b>Original:</b> {self.o_name}"))
         mid_layout.addWidget(QLabel(f"Size: {self.o_size / 1024:.1f} KB | {self.o_w}x{self.o_h}"))
@@ -91,6 +93,19 @@ class PairWidget(QWidget):
         mid_layout.addWidget(QLabel(f"<b>Cropped:</b> {self.c_name}"))
         mid_layout.addWidget(QLabel(f"Size: {self.c_size / 1024:.1f} KB | {self.c_w}x{self.c_h}"))
         
+        # --- NEW: Enhancement Warning Cue ---
+        #if self.c_w > self.o_w or self.c_h > self.o_h or self.c_size > self.o_size:
+        if self.c_w > self.o_w or self.c_h > self.o_h or (self.c_w * self.c_h) > (self.o_w * self.o_h): # This checks if the cropped image has more pixels than the original, which is a strong indicator of upscaling.
+            lbl_warn = QLabel("<b>⚠️ WARNING: Cropped image is larger/upscaled!</b>")
+            lbl_warn.setStyleSheet("color: #D84315; background-color: #FBE9E7; padding: 4px; border-radius: 4px; border: 1px solid #D84315;")
+            lbl_warn.setWordWrap(True)
+            mid_layout.addWidget(lbl_warn)
+            
+            # Optional: You can uncomment the line below if you want the app to 
+            # automatically uncheck the mass-replace box for enhanced images to be extra safe.
+            # self.chk_mass.setEnabled(False) 
+        # ------------------------------------
+
         self.btn_replace = QPushButton("Replace Single")
         self.btn_replace.clicked.connect(self.replace_single)
         self.chk_mass = QCheckBox("Select")
@@ -101,6 +116,7 @@ class PairWidget(QWidget):
         mid_widget.setLayout(mid_layout)
         mid_widget.setFixedWidth(250)
         
+        # Right: Cropped (with overlay)
         self.lbl_crop = QLabel()
         self.lbl_crop.setFixedSize(300, 300)
         self.lbl_crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
