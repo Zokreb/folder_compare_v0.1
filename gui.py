@@ -1,3 +1,5 @@
+import json
+import os
 import sys
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QCheckBox, 
@@ -71,15 +73,21 @@ class FolderInputZone(QWidget):
         self.folder_dropped.emit(path)
 
 class PairWidget(QWidget):
-    def __init__(self, data, core, parent=None):
+    def __init__(self, data, core, hash_size=8, parent=None):
         super().__init__(parent)
         self.core = core
         self.data = data
+        self.hash_size = hash_size # Store it
         
-        # Unpack the data (including the new distance metric)
-        (self.o_path, self.o_name, self.o_size, self.o_w, self.o_h,
-         self.c_path, self.c_name, self.c_size, self.c_w, self.c_h,
-         self.distance) = data
+        # Unpack the data
+        if len(self.data) == 11:
+            (self.o_path, self.o_name, self.o_size, self.o_w, self.o_h,
+             self.c_path, self.c_name, self.c_size, self.c_w, self.c_h,
+             self.distance) = self.data
+        else:
+            (self.o_path, self.o_name, self.o_size, self.o_w, self.o_h,
+             self.c_path, self.c_name, self.c_size, self.c_w, self.c_h) = self.data
+            self.distance = 10
 
         layout = QHBoxLayout(self)
         
@@ -101,15 +109,17 @@ class PairWidget(QWidget):
         self.lbl_crop.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # --- 2. POPULATE THE DATA ---
-
+        # Parse the distance and calculate confidence
         if isinstance(self.distance, bytes):
-            # Decode the raw little-endian memory dump into an integer
             self.distance = int.from_bytes(self.distance, byteorder='little')
         else:
             self.distance = float(self.distance)
         
         # Calculate Confidence Math (assuming default hash_size=8, so 32 is 0%)
-        self.confidence = max(0.0, (1.0 - (self.distance / 32.0)) * 100.0)
+        # Total bits = hash_size squared. Random noise threshold is half of that.
+        max_distance = (self.hash_size ** 2) / 2.0
+        
+        self.confidence = max(0.0, (1.0 - (self.distance / max_distance)) * 100.0)
         
         lbl_conf = QLabel(f"<b>Match Confidence: {self.confidence:.1f}%</b>")
         if self.confidence > 80:
@@ -244,7 +254,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Match & Restore")
         self.setGeometry(100, 100, 1100, 800)
         self.core = ImageProcessor()
-        self.current_db_hash_size = 8  # <-- NEW: Tracks the active DB hash size        
+
+        # --- NEW: Load Settings & DB Failsafe ---
+        self.settings = self.load_settings()
+        
+        # Determine the true state of the DB
+        db_hash = self.core.get_existing_hash_size()
+        if db_hash is not None:
+            self.current_db_hash_size = db_hash
+            # Force the slider to respect the actual DB state if JSON was deleted/desynced
+            self.settings["hash_size"] = db_hash 
+        else:
+            self.current_db_hash_size = self.settings["hash_size"]            
         
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -253,9 +274,11 @@ class MainWindow(QMainWindow):
         # Top Controls: Folder Inputs
         drop_layout = QHBoxLayout()
         self.drop_orig = FolderInputZone("Original Images")
+        self.drop_orig.line_edit.setText(self.settings["orig_folder"]) # Load saved path
         self.drop_orig.folder_dropped.connect(lambda path: self.run_scan(path, "original"))
         
         self.drop_crop = FolderInputZone("Cropped Images")
+        self.drop_crop.line_edit.setText(self.settings["crop_folder"]) # Load saved path
         self.drop_crop.folder_dropped.connect(lambda path: self.run_scan(path, "cropped"))
         
         drop_layout.addWidget(self.drop_orig)
@@ -292,21 +315,21 @@ class MainWindow(QMainWindow):
         # --- NEW: Settings / Sliders Panel ---
         settings_layout = QHBoxLayout()
         
-        # Hash Size Slider
-        self.lbl_hash = QLabel("<b>Hash Size:</b> 8")
+        h_val = self.settings["hash_size"]
+        self.lbl_hash = QLabel(f"<b>Hash Size:</b> {h_val}")
         self.slider_hash = QSlider(Qt.Orientation.Horizontal)
-        self.slider_hash.setRange(4, 24) # Allow sizes from 4 to 24
+        self.slider_hash.setRange(4, 24)
         self.slider_hash.setSingleStep(2)
-        self.slider_hash.setValue(8) # Default 8
+        self.slider_hash.setValue(h_val) # Apply saved value
         self.slider_hash.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider_hash.setTickInterval(4)
         self.slider_hash.valueChanged.connect(self.on_hash_changed)
         
-        # Threshold Slider
-        self.lbl_thresh = QLabel("<b>Match Threshold:</b> 10")
+        t_val = self.settings["threshold"]
+        self.lbl_thresh = QLabel(f"<b>Match Threshold:</b> {t_val}")
         self.slider_thresh = QSlider(Qt.Orientation.Horizontal)
-        self.slider_thresh.setRange(0, 60) # Allow distances up to 60
-        self.slider_thresh.setValue(10) # Default 10
+        self.slider_thresh.setRange(0, 60)
+        self.slider_thresh.setValue(t_val) # Apply saved value
         self.slider_thresh.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider_thresh.setTickInterval(5)
         self.slider_thresh.valueChanged.connect(lambda v: self.lbl_thresh.setText(f"<b>Match Threshold:</b> {v}"))
@@ -343,6 +366,43 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.scroll_area)
 
         self.pair_widgets = []
+
+    def load_settings(self):
+        # Default fallback settings
+        settings = {
+            "hash_size": 8,
+            "threshold": 10,
+            "orig_folder": "",
+            "crop_folder": ""
+        }
+        
+        if os.path.exists("settings.json"):
+            try:
+                with open("settings.json", "r") as f:
+                    loaded = json.load(f)
+                    settings.update(loaded) # Overwrite defaults with saved values
+            except Exception as e:
+                print(f"Error loading settings: {e}")
+                
+        return settings
+
+    def save_settings(self):
+        settings = {
+            "hash_size": self.slider_hash.value(),
+            "threshold": self.slider_thresh.value(),
+            "orig_folder": self.drop_orig.line_edit.text(),
+            "crop_folder": self.drop_crop.line_edit.text()
+        }
+        try:
+            with open("settings.json", "w") as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"Error saving settings: {e}")
+
+    def closeEvent(self, event):
+        """This built-in PyQt method triggers automatically when you X out of the window."""
+        self.save_settings()
+        event.accept()
 
     def run_scan(self, path, folder_type):
         self.lbl_status.setText(f"Scanning {folder_type} folder...")
@@ -443,8 +503,10 @@ class MainWindow(QMainWindow):
         self.combo_sort.setEnabled(False)
         
         for i, match in enumerate(matches):
-            pw = PairWidget(match, self.core)
-            pw.default_index = i  # <-- Store original order
+            # --- UPDATE 3: Pass the dynamic hash size into the widget ---
+            pw = PairWidget(match, self.core, self.current_db_hash_size) 
+            
+            pw.default_index = i
             self.scroll_layout.addWidget(pw)
             self.pair_widgets.append(pw)
             

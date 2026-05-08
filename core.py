@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import imagehash
+import math
 
 class ImageProcessor:
     def __init__(self, db_path="temp_image_cache.db"):
@@ -47,6 +48,17 @@ class ImageProcessor:
             )
         ''')
         self.conn.commit()
+
+
+    def get_existing_hash_size(self):
+        """Mathematically derives the hash_size from the length of the stored hex strings."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT phash FROM images LIMIT 1")
+        row = cursor.fetchone()
+        if row and row[0]:
+            # Formula: length of hex string * 4 gives total bits. Square root gives the grid size.
+            return int(math.sqrt(len(row[0]) * 4))
+        return None  # Database is empty
 
     # UPDATE 1: Add hash_size=8 to the parameters
     def scan_folder(self, folder_path, folder_type, force_rebuild=False, hash_size=8, progress_callback=None):
