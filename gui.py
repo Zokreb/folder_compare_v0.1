@@ -230,16 +230,6 @@ class PairWidget(QWidget):
         pixmap = QPixmap(path)
         label.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
-    """def load_overlay(self):
-        img_rgb = self.core.generate_overlay(self.o_path, self.c_path)
-        if img_rgb is not None:
-            h, w, ch = img_rgb.shape
-            bytes_per_line = ch * w
-            qimg = QImage(img_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
-            self.lbl_crop.setPixmap(pixmap.scaled(300, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        else:
-            self.load_image(self.c_path, self.lbl_crop)"""
 
     def replace_single(self):
         self.core.replace_image(self.o_path, self.c_path)
@@ -315,32 +305,69 @@ class MainWindow(QMainWindow):
         # --- NEW: Settings / Sliders Panel ---
         settings_layout = QHBoxLayout()
         
+        # ROW 1: Engine Select & Basic pHash
+        row1_layout = QHBoxLayout()
+        
+        self.combo_engine = QComboBox()
+        self.combo_engine.addItems(["Engine: Perceptual Hash (Fast)", "Engine: ORB Hybrid (Deep Scan)"])
+        self.combo_engine.setCurrentIndex(self.settings["engine_index"])
+        self.combo_engine.currentIndexChanged.connect(self.toggle_engine_ui)
+        row1_layout.addWidget(self.combo_engine)
+        
+        row1_layout.addWidget(QLabel("   |   "))
+        
         h_val = self.settings["hash_size"]
         self.lbl_hash = QLabel(f"<b>Hash Size:</b> {h_val}")
         self.slider_hash = QSlider(Qt.Orientation.Horizontal)
         self.slider_hash.setRange(4, 24)
         self.slider_hash.setSingleStep(2)
-        self.slider_hash.setValue(h_val) # Apply saved value
-        self.slider_hash.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.slider_hash.setTickInterval(4)
+        self.slider_hash.setValue(h_val)
         self.slider_hash.valueChanged.connect(self.on_hash_changed)
+        row1_layout.addWidget(self.lbl_hash)
+        row1_layout.addWidget(self.slider_hash)
+        
+        row1_layout.addWidget(QLabel("   |   "))
         
         t_val = self.settings["threshold"]
-        self.lbl_thresh = QLabel(f"<b>Match Threshold:</b> {t_val}")
+        self.lbl_thresh = QLabel(f"<b>pHash Threshold:</b> {t_val}")
         self.slider_thresh = QSlider(Qt.Orientation.Horizontal)
-        self.slider_thresh.setRange(0, 60)
-        self.slider_thresh.setValue(t_val) # Apply saved value
-        self.slider_thresh.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.slider_thresh.setTickInterval(5)
-        self.slider_thresh.valueChanged.connect(lambda v: self.lbl_thresh.setText(f"<b>Match Threshold:</b> {v}"))
+        self.slider_thresh.setRange(0, 140)
+        self.slider_thresh.setValue(t_val)
+        self.slider_thresh.valueChanged.connect(lambda v: self.lbl_thresh.setText(f"<b>pHash Threshold:</b> {v}"))
+        row1_layout.addWidget(self.lbl_thresh)
+        row1_layout.addWidget(self.slider_thresh)
 
-        settings_layout.addWidget(self.lbl_hash)
-        settings_layout.addWidget(self.slider_hash)
-        settings_layout.addWidget(QLabel("   |   ")) # Spacer
-        settings_layout.addWidget(self.lbl_thresh)
-        settings_layout.addWidget(self.slider_thresh)
-        self.main_layout.addLayout(settings_layout)
+        row1_layout.addWidget(QLabel("   |   "))        
         
+        settings_layout.addLayout(row1_layout)
+
+        # ROW 2: ORB Hybrid Controls
+        row2_layout = QHBoxLayout()
+        
+        ol_val = self.settings["orb_loose"]
+        self.lbl_orb_loose = QLabel(f"<b>Min Verification Confidence:</b> {ol_val}")
+        self.slider_orb_loose = QSlider(Qt.Orientation.Horizontal)
+        self.slider_orb_loose.setRange(0, 100)
+        self.slider_orb_loose.setValue(ol_val)
+        self.slider_orb_loose.valueChanged.connect(lambda v: self.lbl_orb_loose.setText(f"<b>Min Verification Confidence:</b> {v}%"))
+        row2_layout.addWidget(self.lbl_orb_loose)
+        row2_layout.addWidget(self.slider_orb_loose)
+        
+        row2_layout.addWidget(QLabel("   |   "))
+        
+        of_val = self.settings["orb_features"]
+        self.lbl_orb_feat = QLabel(f"<b>Hybrid Pass 2 (ORB #Features):</b> {of_val}")
+        self.slider_orb_feat = QSlider(Qt.Orientation.Horizontal)
+        self.slider_orb_feat.setRange(10, 2000)
+        self.slider_orb_feat.setSingleStep(100)
+        self.slider_orb_feat.setValue(of_val)
+        self.slider_orb_feat.valueChanged.connect(lambda v: self.lbl_orb_feat.setText(f"<b>Hybrid Pass 2 (ORB #Features):</b> {v}"))
+        row2_layout.addWidget(self.lbl_orb_feat)
+        row2_layout.addWidget(self.slider_orb_feat)
+        
+        settings_layout.addLayout(row2_layout)
+        self.main_layout.addLayout(settings_layout)
+
         action_layout.addWidget(self.chk_force_rebuild)
         action_layout.addWidget(self.btn_process)
         action_layout.addWidget(self.combo_sort) # Added to layout
@@ -368,22 +395,22 @@ class MainWindow(QMainWindow):
         self.pair_widgets = []
 
     def load_settings(self):
-        # Default fallback settings
         settings = {
             "hash_size": 8,
             "threshold": 10,
             "orig_folder": "",
-            "crop_folder": ""
+            "crop_folder": "",
+            "engine_index": 0,          # 0 = pHash, 1 = ORB Hybrid
+            "orb_loose": 30,            # Pass 1 Threshold
+            "orb_features": 500         # Pass 2 Deep Scan intensity
         }
-        
         if os.path.exists("settings.json"):
             try:
                 with open("settings.json", "r") as f:
                     loaded = json.load(f)
-                    settings.update(loaded) # Overwrite defaults with saved values
+                    settings.update(loaded)
             except Exception as e:
                 print(f"Error loading settings: {e}")
-                
         return settings
 
     def save_settings(self):
@@ -391,7 +418,10 @@ class MainWindow(QMainWindow):
             "hash_size": self.slider_hash.value(),
             "threshold": self.slider_thresh.value(),
             "orig_folder": self.drop_orig.line_edit.text(),
-            "crop_folder": self.drop_crop.line_edit.text()
+            "crop_folder": self.drop_crop.line_edit.text(),
+            "engine_index": self.combo_engine.currentIndex(),
+            "orb_loose": self.slider_orb_loose.value(),
+            "orb_features": self.slider_orb_feat.value()
         }
         try:
             with open("settings.json", "w") as f:
@@ -467,24 +497,70 @@ class MainWindow(QMainWindow):
         self.scan_worker_crop.finished.connect(self._chain_matching) # Move to Step 3 when done
         self.scan_worker_crop.start()
 
+    def toggle_engine_ui(self):
+        """Disables sliders that are not relevant to the currently selected engine.
+        is_orb = self.combo_engine.currentIndex() == 1
+        
+        # Standard pHash Threshold is disabled during ORB (but Hash Size stays active for the Pass 1 filter)
+        self.lbl_thresh.setEnabled(not is_orb)
+        self.slider_thresh.setEnabled(not is_orb)
+        
+        # ORB sliders are enabled only when ORB is selected
+        self.lbl_orb_loose.setEnabled(is_orb)
+        self.slider_orb_loose.setEnabled(is_orb)
+        self.lbl_orb_feat.setEnabled(is_orb)
+        self.slider_orb_feat.setEnabled(is_orb)
+        """
+
+        """
+        Activates or inactivates sliders based on the selected engine.
+        In Hybrid mode, the pHash threshold serves as the pre-filter gate.
+        """
+        is_orb = self.combo_engine.currentIndex() == 1
+        
+        # Standard pHash Threshold is ALWAYS used (either as the only pass or the first pass)
+        self.lbl_thresh.setEnabled(True)
+        self.slider_thresh.setEnabled(True)
+        
+        # ORB-specific verification sliders are ONLY active in Hybrid mode
+        self.lbl_orb_loose.setEnabled(is_orb)
+        self.slider_orb_loose.setEnabled(is_orb)
+        self.lbl_orb_feat.setEnabled(is_orb)
+        self.slider_orb_feat.setEnabled(is_orb)
+        
+        # UI Polish: Change the pHash label text based on mode
+        if is_orb:
+            self.lbl_thresh.setText(f"<b>pHash Pre-Filter Gate:</b> {self.slider_thresh.value()}")
+        else:
+            self.lbl_thresh.setText(f"<b>pHash Threshold:</b> {self.slider_thresh.value()}")
+
     def _chain_matching(self):
-        # Update our tracking variable and uncheck the rebuild box
         self.current_db_hash_size = self.slider_hash.value()
         self.chk_force_rebuild.setChecked(False)
         
         self.lbl_status.setText("Matching images...")
         self.progress_bar.setValue(0)
-        
-        # Lock UI in case we skipped straight to this step
         self.btn_process.setEnabled(False)
         
-        thresh = self.slider_thresh.value()
-        
-        # Step 3: Find Matches
-        self.match_worker = WorkerThread(self.core.find_matches, thresh)
+        if self.combo_engine.currentIndex() == 0:
+            # Standard pHash (Single pass)
+            thresh = self.slider_thresh.value()
+            self.match_worker = WorkerThread(self.core.find_matches, thresh)
+        else:
+            # ORB Hybrid (pHash + ORB Verification)
+            # Use standard pHash threshold for the first pass
+            p_thresh = self.slider_thresh.value() 
+            # Use the "Loose" slider as the strict Verification % threshold
+            v_thresh = self.slider_orb_loose.value() 
+            # Use the "Features" slider for depth
+            orb_feat = self.slider_orb_feat.value()
+            
+            h_size = self.current_db_hash_size
+            self.match_worker = WorkerThread(self.core.find_matches_orb, p_thresh, v_thresh, orb_feat, h_size)
+            
         self.match_worker.progress.connect(self.progress_bar.setValue)
-        self.match_worker.finished.connect(self.on_matching_finished) # Render widgets when done
-        self.match_worker.start()            
+        self.match_worker.finished.connect(self.on_matching_finished)
+        self.match_worker.start()           
 
     def on_matching_finished(self):
         matches = self.core.get_match_pairs()

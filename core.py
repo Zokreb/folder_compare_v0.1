@@ -158,6 +158,77 @@ class ImageProcessor:
                 
         self.conn.commit()
 
+    def find_matches_orb(self, phash_threshold=15, verification_threshold=20, max_features=500, hash_size=8, progress_callback=None):
+        self.clear_matches()
+        cursor = self.conn.cursor()
+        
+        cursor.execute("SELECT id, phash, filepath FROM images WHERE folder_type='original'")
+        originals = cursor.fetchall()
+        
+        cursor.execute("SELECT id, phash, filepath FROM images WHERE folder_type='cropped'")
+        cropped = cursor.fetchall()
+
+        total = len(cropped)
+        if total == 0:
+            if progress_callback:
+                progress_callback(100)
+            return
+
+        orb = cv2.ORB_create(nfeatures=max_features)
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        max_phash_dist = (hash_size ** 2) / 2.0 
+
+        for i, (c_id, c_hash_str, c_path) in enumerate(cropped):
+            c_hash = imagehash.hex_to_hash(c_hash_str)
+            
+            best_phash_id = None
+            best_phash_dist = float('inf')
+            best_phash_path = None
+
+            # --- STEP 1: Find the SINGLE best pHash candidate ---
+            for o_id, o_hash_str, o_path in originals:
+                o_hash = imagehash.hex_to_hash(o_hash_str)
+                dist = int(c_hash - o_hash)
+                if dist < best_phash_dist:
+                    best_phash_dist = dist
+                    best_phash_id = o_id
+                    best_phash_path = o_path
+
+            # --- STEP 2: Verification Gate ---
+            # Only proceed if the best pHash match is within your initial threshold
+            if best_phash_id is not None and best_phash_dist <= phash_threshold:
+                
+                # Load images for the "Deep Scan" verification
+                img_crop = cv2.imdecode(np.fromfile(c_path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                img_orig = cv2.imdecode(np.fromfile(best_phash_path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
+                
+                if img_crop is not None and img_orig is not None:
+                    kp1, des1 = orb.detectAndCompute(img_crop, None)
+                    kp2, des2 = orb.detectAndCompute(img_orig, None)
+                    
+                    if des1 is not None and des2 is not None and len(kp1) > 0:
+                        matches = bf.match(des1, des2)
+                        # Filter for high-quality feature matches
+                        good_matches = [m for m in matches if m.distance < 50]
+                        
+                        # Calculate verification confidence
+                        confidence = (len(good_matches) / len(kp1)) * 100.0
+
+                        # --- STEP 3: The Discard Logic ---
+                        if confidence >= verification_threshold:
+                            # Map ORB confidence back to distance for the UI
+                            fake_distance = int(max_phash_dist * (1.0 - (confidence / 100.0)))
+                            cursor.execute("INSERT INTO matches (orig_id, crop_id, distance) VALUES (?, ?, ?)", 
+                                           (best_phash_id, c_id, fake_distance))
+                        else:
+                            # ORB says it's a lie. We save nothing for this cropped image.
+                            pass
+            
+            if progress_callback:
+                progress_callback(int((i + 1) / total * 100))
+                
+        self.conn.commit()
+
     def get_match_pairs(self):
         cursor = self.conn.cursor()
         cursor.execute('''
